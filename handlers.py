@@ -1,206 +1,151 @@
-import json
-import asyncio
 import aiohttp
+import asyncio
+import json
 import re
-from math import floor
-from aiogram import Router, types
-from aiogram.filters import Command, CommandStart
+from collections import defaultdict
+from aiogram import Router, types, Bot
+from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from keyboards import main_kb
-from config import PROXY_HOST, PROXY_PORT, LOGIN, PASSWORD
-from creatorBalance import creator_balance
-from wallets_tokens_created import rugs_checker
-#from top10holders_and_dev import get_creator_balance, get_top_10_holder_rate, cto_checker
+from aiogram.filters.callback_data import CallbackData 
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from logging.handlers import RotatingFileHandler
 
-import logging
+from config import TOKEN
+from moralis_api import get_token_price
+from birdeye_api import fetch_ohlcv_data
+
 
 router = Router()
+bot = Bot(token=TOKEN)
 
-good_tokens = {}
-bad_tokens = set()  # Множество для хранения плохих токенов
-stop_event = asyncio.Event()
-sorted_tokens = {}
-
-trade_created_pattern = re.compile(r'42\["tradeCreated",({.*})\]')
-first_word_pattern = re.compile(r'\["(\w+)"')
+CHAT_ID = None
+FRESH_TOKENS = defaultdict(lambda: {"hits": 0, "70%": False, "80%": False, "90%": False})
+is_checking = False  # Flag for tracking if checking is running
 
 
-MIN_SOL_VOLUME = 15
-
-# Логирование
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
-@router.message(CommandStart())
-async def get_start(message: Message):
-    await message.answer(f"Hello, {message.from_user.first_name}", reply_markup=main_kb)
-
-
-@router.message(Command("help"))
-async def get_help(message: Message):
-    await message.answer("it's help command")
-
-
-async def decrement_values_periodically():
-    """Асинхронная функция для периодического уменьшения значений volume."""
-    while True:
-        await asyncio.sleep(300)  # Ждем 5 минут
-        for token_info in good_tokens.values():
-            token_info["volume"] -= 0.5
-        logging.info("Values decremented by 0.5")
-
-
-def extract_first_word(message):
-    """Извлекает первое слово в квадратных скобках из сообщения."""
-    match = first_word_pattern.search(message)
-    return match.group(1) if match else None
-
-
-async def send_heartbeat(ws):
-    """Функция для отправки сообщения '3' каждые 10 секунд."""
-    while not ws.closed:
-        await asyncio.sleep(10)
-        try:
-            await ws.send_str("3")
-            logging.info("Отправлено сообщение '3'")
-        except aiohttp.ClientConnectionError as e:
-            logging.error(f"Ошибка соединения при отправке heartbeat: {e}")
-            break
-
-
-async def check_trades_logic(ws, message):
-    stop_button = InlineKeyboardBuilder()
-    stop_button.add(types.InlineKeyboardButton(text="Stop", callback_data="stop_check"))
-
-    if not stop_event.is_set():
-        await message.reply(
-            "Нажми кнопку чтобы остановить возню", reply_markup=stop_button.as_markup()
-        )
-
-    stop_event.clear()
-
-    while not stop_event.is_set():
-        try:
-            result = await ws.receive(timeout=30)  # Указываем тайм-аут для ожидания сообщений
-            if result.type == aiohttp.WSMsgType.TEXT:
-                first_word = extract_first_word(result.data)
-                if first_word == "tradeCreated":
-                    match = trade_created_pattern.search(result.data)
-                    if match:
-                        data = json.loads(match.group(1))
-                        asyncio.create_task(process_trade(data, message))  # Асинхронная обработка трейдов
-            else:
-                logging.warning(f"Неожиданный тип сообщения: {result.type}")
-        except asyncio.TimeoutError:
-            logging.warning("Тайм-аут при ожидании сообщения от вебсокета.")
-        except Exception as e:
-            logging.error(f"Ошибка при обработке сообщения: {e}")
-            break
-
-
-async def process_trade(data, message):
-    mint_address = data.get("mint")
-    sol_amount = data.get("sol_amount", 0) / 1_000_000_000
-
-    if mint_address not in bad_tokens:
-        if sol_amount > 0.2:
-            token_info = good_tokens.setdefault(mint_address, {
-                "volume": 0, "txs_buy": 0, "txs_sell": 0, "hits": 0
-            })
-
-            if data.get("is_buy"):
-                token_info["txs_buy"] += 1
-                token_info["volume"] += sol_amount
-                if floor(token_info["volume"] // MIN_SOL_VOLUME) > token_info["hits"]:
-                    token_info["hits"] += 1
-                    asyncio.create_task(send_token_alert(mint_address, token_info, data, message))  # Асинхронная отправка уведомлений
-            else:
-                token_info["txs_sell"] += 1
-                token_info["volume"] -= sol_amount
-                if token_info["volume"] <= 0:
-                    del good_tokens[mint_address]
-
-    global sorted_tokens
-    sorted_tokens = dict(sorted(good_tokens.items(), key=lambda item: item[1]["volume"], reverse=True))
-    logging.info(f"Текущие отсортированные токены: {sorted_tokens}")
-
-
-async def send_token_alert(mint_address, token_info, data, message):
-    """Асинхронная функция для отправки информации о токене."""
-    token_name = data.get("name")
-    token_symbol = data.get("symbol")
-    trade_link = f"https://gmgn.ai/sol/token/{mint_address}"
-
-    token_buttons = InlineKeyboardBuilder()
-    token_buttons.add(
-        types.InlineKeyboardButton(text="fuck this", callback_data=f"bad_token_{mint_address}")
+def create_link_buttons(mint: str) -> InlineKeyboardMarkup:
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+    trojan = InlineKeyboardButton(
+        text=f"Trojan",
+        url=f"https://t.me/achilles_trojanbot?start=r-bankx0-{mint}"
     )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[trojan]])
 
-    twitter = data.get("twitter")
-    telegram = data.get("telegram")
-    creator = data.get("creator")
-    token_description = data.get("description")
-    market_cap_usdt = round(data.get("usd_market_cap", 0))
-    website = data.get("website")
-    img = data.get("image_uri")
-    sol_surge = round(good_tokens[mint_address]["volume"], 2)
-    #dev_balance = await asyncio.to_thread(get_creator_balance, mint_address)  # Асинхронный вызов в отдельном потоке
+    return keyboard
+
+
+@router.message(Command("goida_fresh"))
+async def function_name(message: Message, command: CommandObject):
+    global CHAT_ID
+    global is_checking
+
+    CHAT_ID = message.chat.id
+
+    if command.args:
+        # Assuming command.args contains the full text you've provided
+        full_text = command.args  # Get the full command text
+        
+        # Use regex to extract the Token Address
+        match = re.search(r'\*Token Address:\* (.+)', full_text)
+        if match:
+            mint_address = match.group(1).strip()  # Extract the address and remove any extra spaces
+            FRESH_TOKENS[mint_address]["hits"] += 1
+            await message.reply( 
+                                f"🎯 Hits: {FRESH_TOKENS[mint_address]['hits']}\n\n"
+                                f"Added: {mint_address}"
+                                )
+        else:
+            await message.reply("Token Address not found in the provided text.")
+    else:
+        await message.reply("Пожалуйста, укажите минт адрес после команды.")
+
+    if not is_checking:
+        for token in FRESH_TOKENS:
+            if FRESH_TOKENS[token]["hits"] == 3:
+                print("started checking...")
+                is_checking = True
+                asyncio.create_task(check_diff())
+                break 
+
+
+async def check_diff():
+    global CHAT_ID
+    global is_checking
 
     try:
-        await message.answer_photo(
-            photo=img,
-            caption=(
-                f"{token_name} — <a href='https://x.com/search?q=%24{token_symbol}&src=typed_query&f=live'><strong>${token_symbol}</strong></a> | <strong>Hits</strong>: {good_tokens[mint_address]['hits']}\n"
-                f"Volume surged {sol_surge} SOL under 5 mins\n"
-                f"<strong>Buys:</strong> {good_tokens[mint_address]['txs_buy']} | <strong>Sells:</strong> {good_tokens[mint_address]['txs_sell']}\n\n"
-                f"<strong>Market Cap</strong>: ${market_cap_usdt}\n"
-                f"<strong>CA</strong>: <code>{mint_address}</code>\n"
-                f"<strong>Description</strong>: {token_description}\n"
-                f"<a href='{twitter}'>Twitter</a> | <a href='{telegram}'>Telegram</a> | <a href='{website}'>Website</a>\n\n"
-                f"<strong>Creator Tab: </strong>\n"
-                #f"Balance: {creator_balance(creator)} SOL | Token Supply: {dev_balance} | {rugs_checker(creator)}\n"
-                f"<a href='https://solscan.io/account/{creator}'>Solscan</a> | <a href='https://pump.fun/profile/{creator}'>Pump Fun</a>\n\n"
-                #f"Top Holders: {get_top_10_holder_rate(mint_address)} | CTO: {cto_checker(sol_surge, dev_balance)}\n\n"
-                f"<a href='https://t.me/achilles_trojanbot?start=r-bankx0-{mint_address}'>Trojan</a> | <a href='{trade_link}'>GmGn</a> | <a href='https://photon-sol.tinyastro.io/en/lp/{mint_address}'>Photon</a> | <a href='https://bullx.io/terminal?chainId=1399811149&address={mint_address}'>BullX</a>"
-            ),
-            parse_mode="HTML",
-            reply_markup=token_buttons.as_markup(),
-        )
-    except Exception as e:
-        logging.error(f"Ошибка отправки изображения: {e}")
-        await message.answer(
-            text=(
-                f"{token_name} — <a href='https://x.com/search?q=%24{token_symbol}&src=typed_query&f=live'><strong>${token_symbol}</strong></a> | <strong>Hits</strong>: {good_tokens[mint_address]['hits']}\n"
-                f"Volume surged {sol_surge} SOL under 5 mins\n"
-                f"<strong>Buys:</strong> {good_tokens[mint_address]['txs_buy']} | <strong>Sells:</strong> {good_tokens[mint_address]['txs_sell']}\n\n"
-                f"<strong>Market Cap</strong>: ${market_cap_usdt}\n"
-                f"<strong>CA</strong>: <code>{mint_address}</code>\n"
-                f"<strong>Description</strong>: {token_description}\n"
-                f"<a href='{twitter}'>Twitter</a> | <a href='{telegram}'>Telegram</a> | <a href='{website}'>Website</a>\n\n"
-                f"<strong>Creator Tab: </strong>\n"
-                #f"Balance: {creator_balance(creator)} SOL | Token Supply: {dev_balance} | {rugs_checker(creator)}\n"
-                f"<a href='https://solscan.io/account/{creator}'>Solscan</a> | <a href='https://pump.fun/profile/{creator}'>Pump Fun</a>\n\n"
-                #f"Top Holders: {get_top_10_holder_rate(mint_address)} | CTO: {cto_checker(sol_surge, dev_balance)}\n\n"
-                f"<a href='https://t.me/achilles_trojanbot?start=r-bankx0-{mint_address}'>Trojan</a> | <a href='{trade_link}'>GmGn</a> | <a href='https://photon-sol.tinyastro.io/en/lp/{mint_address}'>Photon</a> | <a href='https://bullx.io/terminal?chainId=1399811149&address={mint_address}'>BullX</a>"
-            ),
-            parse_mode="HTML",
-            reply_markup=token_buttons.as_markup(),
-        )
+        while True:
+            for mint in FRESH_TOKENS:
+                if FRESH_TOKENS[mint]["hits"]:
+                    ath = fetch_ohlcv_data(mint)
+                    if ath is None or ath == 0:  # Check for valid ATH
+                        continue
+
+                    current_price = get_token_price(mint)
+                    if current_price is None or current_price == 0:  # Check for valid price
+                        continue
+
+                    diff = round(100 - (current_price / ath) * 100, 2)
+                    
+
+                    gmgn_link = "https://gmgn.ai/sol/token/{mint}"
+                    photon_link = "https://photon-sol.tinyastro.io/en/lp/{mint}"
+                    bullx_link = "https://bullx.io/terminal?chainId=1399811149&address={mint}"
+                    dexscreener = "https://dexscreener.com/solana/{mint}"
+
+                    if diff >= 90:
+                        FRESH_TOKENS[mint]["90%"] = True
+                        del FRESH_TOKENS[mint]
+                        thread_id = 11
+                    elif diff >= 80:
+                        FRESH_TOKENS[mint]["80%"] = True
+                        thread_id = 7
+                    elif diff >= 70:
+                        FRESH_TOKENS[mint]["70%"] = True
+                        thread_id = 2
+                    else:
+                        thread_id = 19
+
+                    text = (
+                        f"🚨 <strong>-{diff}% from ATH</strong>\n\n"
+                        f"Now: {current_price} | ATH: {ath}\n\n"
+                        f"CA: <code> {mint} </code>\n\n"
+                        f"<a href='{photon_link}'>Photon</a> | <a href='{gmgn_link}'>GmGn</a> |<a href='{bullx_link}'>BullX</a> | <a href='{dexscreener}'>DexScreener</a>"
+                    )
+
+                    if text:
+                        
+                        await bot.send_message(
+                            CHAT_ID,
+                            message_thread_id=thread_id,
+                            text=text,
+                            parse_mode="HTML",
+                            reply_markup=create_link_buttons(mint)
+                        )
+
+            await asyncio.sleep(60)
+
+    finally:
+        is_checking = False  # Reset the flag when checking stops
 
 
-@router.message(Command("check_trades"))
-async def check_trades_command(message: Message):
-    url = "wss://frontend-api.pump.fun/socket.io/?EIO=4&transport=websocket"
-    proxy_auth = aiohttp.BasicAuth(LOGIN, PASSWORD)
-    proxy_url = f"http://{PROXY_HOST}:{PROXY_PORT}"
+@router.message(Command("aloha"))
+async def function_name(message: Message, command: CommandObject):
+    global CHAT_ID
+    global is_checking
 
-    async with aiohttp.ClientSession() as session:
-        async with session.ws_connect(url, proxy=proxy_url, proxy_auth=proxy_auth) as ws:
-            await ws.send_str("40")
-            logging.info("Сообщение '40' отправлено")
+    CHAT_ID = message.chat.id
 
-            await asyncio.gather(
-                send_heartbeat(ws),
-                decrement_values_periodically(),
-                check_trades_logic(ws, message)
-            )
+    if command.args:
+        # Assuming command.args contains the full text you've provided
+        full_text = command.args  # Get the full command text
+        
+        # Use regex to extract the Token Address
+        match = re.search(r'\*Token Address:\* (.+)', full_text)
+        if match:
+            token_address = match.group(1).strip()  # Extract the address and remove any extra spaces
+            await message.reply(f"Token Address: {token_address}")
+        else:
+            await message.reply("Token Address not found in the provided text.")
+    else:
+        await message.reply("Пожалуйста, укажите минт адрес после команды.")
+        
