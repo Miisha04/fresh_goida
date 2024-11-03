@@ -67,34 +67,34 @@ async def function_name(message: Message, command: CommandObject):
                 asyncio.create_task(check_diff())
                 break 
 
-
 async def check_diff():
     global CHAT_ID
     global is_checking
 
     try:
         while True:
-            for mint in FRESH_TOKENS:
+            # Создаем список ключей, чтобы избежать изменения словаря во время итерации
+            for mint in list(FRESH_TOKENS.keys()):
                 if FRESH_TOKENS[mint]["hits"]:
                     ath = fetch_ohlcv_data(mint)
-                    if ath is None or ath == 0:  # Check for valid ATH
+                    if ath is None or ath == 0:  # Проверка на корректный ATH
                         continue
 
                     current_price = get_token_price(mint)
-                    if current_price is None or current_price == 0:  # Check for valid price
+                    if current_price is None or current_price == 0:  # Проверка на корректную цену
                         continue
 
                     diff = round(100 - (current_price / ath) * 100, 2)
-                    
 
-                    gmgn_link = "https://gmgn.ai/sol/token/{mint}"
-                    photon_link = "https://photon-sol.tinyastro.io/en/lp/{mint}"
-                    bullx_link = "https://bullx.io/terminal?chainId=1399811149&address={mint}"
-                    dexscreener = "https://dexscreener.com/solana/{mint}"
+                    gmgn_link = f"https://gmgn.ai/sol/token/{mint}"
+                    photon_link = f"https://photon-sol.tinyastro.io/en/lp/{mint}"
+                    bullx_link = f"https://bullx.io/terminal?chainId=1399811149&address={mint}"
+                    dexscreener = f"https://dexscreener.com/solana/{mint}"
 
                     if diff >= 90:
                         FRESH_TOKENS[mint]["90%"] = True
-                        del FRESH_TOKENS[mint]
+                        del FRESH_TOKENS[mint]  # Удаление ключа безопасно, так как мы итерируем по списку
+                        print(FRESH_TOKENS)
                         thread_id = 11
                     elif diff >= 80:
                         FRESH_TOKENS[mint]["80%"] = True
@@ -113,7 +113,6 @@ async def check_diff():
                     )
 
                     if text:
-                        
                         await bot.send_message(
                             CHAT_ID,
                             message_thread_id=thread_id,
@@ -125,7 +124,8 @@ async def check_diff():
             await asyncio.sleep(60)
 
     finally:
-        is_checking = False  # Reset the flag when checking stops
+        is_checking = False  # Сброс флага, когда проверка прекращается
+
 
 
 @router.message(Command("aloha"))
