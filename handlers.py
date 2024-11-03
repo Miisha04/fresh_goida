@@ -79,8 +79,8 @@ async def check_diff():
                 if time_diff >= timedelta(minutes=15):
                     del FRESH_TOKENS[mint]
                     continue
-                else:
-                    print(f"timediff = {time_diff}")
+                # else:
+                #     print(f"timediff = {time_diff}")
 
                 if FRESH_TOKENS[mint]["hits"]:
                     ath = fetch_ohlcv_data(mint)
