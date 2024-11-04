@@ -43,7 +43,7 @@ async def handle_text_messages(message: Message):
 
     CHAT_ID = message.chat.id
 
-    if message.text:
+    if message.text and message.message_thread_id == 19:
 
         mint_address = message.text 
 
@@ -56,16 +56,14 @@ async def handle_text_messages(message: Message):
             )
         else:
             await message.reply("Token Address not found in the provided text.")
-    else:
-        await message.reply("Пожалуйста, укажите минт адрес после команды.")
 
-    if not is_checking:
-        for token in FRESH_TOKENS:
-            if FRESH_TOKENS[token]["hits"] == 1:
-                print("started checking...")
-                is_checking = True
-                asyncio.create_task(check_diff())
-                break 
+        if not is_checking:
+            for token in FRESH_TOKENS:
+                if FRESH_TOKENS[token]["hits"] == 1:
+                    print("started checking...")
+                    is_checking = True
+                    asyncio.create_task(check_diff())
+                    break 
 
 async def check_diff():
     global CHAT_ID
@@ -98,18 +96,18 @@ async def check_diff():
                     bullx_link = f"https://bullx.io/terminal?chainId=1399811149&address={mint}"
                     dexscreener = f"https://dexscreener.com/solana/{mint}"
 
-                    if diff >= 90:
+                    if diff >= 90.0:
                         FRESH_TOKENS[mint]["90%"] = True
-                        del FRESH_TOKENS[mint] 
                         thread_id = 11
-                    elif diff >= 80 and FRESH_TOKENS[mint]["80%"] == False:
+                        del FRESH_TOKENS[mint]
+                    elif diff >= 80.0 and FRESH_TOKENS[mint].get("80%", False) is False:
                         FRESH_TOKENS[mint]["80%"] = True
                         thread_id = 7
-                    elif diff >= 70 and FRESH_TOKENS[mint]["70%"] == False:
+                    elif diff >= 70.0 and FRESH_TOKENS[mint].get("70%", False) is False:
                         FRESH_TOKENS[mint]["70%"] = True
                         thread_id = 2
-                    # else:
-                    #     #thread_id = 19
+                    else:
+                        thread_id = 19
 
                     text = (
                         f"🚨 <strong>-{diff}% from ATH</strong>\n\n"
@@ -118,7 +116,7 @@ async def check_diff():
                         f"<a href='{photon_link}'>Photon</a> | <a href='{gmgn_link}'>GmGn</a> |<a href='{bullx_link}'>BullX</a> | <a href='{dexscreener}'>DexScreener</a>"
                     )
 
-                    if text:
+                    if thread_id != 19:
                         await bot.send_message(
                             CHAT_ID,
                             message_thread_id=thread_id,
